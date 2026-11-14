@@ -1,0 +1,35 @@
+JAVA ASSIGNMENT 5 – PART A: PERSISTENCE DESIGN & PSEUDOCODE
+
+A1 – DESIGN A FILE FORMAT
+A1.1 Record layouts
+(a) Delimited text: passId,regNo,name,routeNo,boardingStop,validityDate,amountPaid followed by newline. Use UTF-8 and CSV quoting (quote fields containing comma, quote or newline; double an embedded quote). Do not simply split on commas in a production CSV parser. A simple assignment implementation can reject commas in names or use a documented escaping rule such as backslash escaping.
+(b) DataOutputStream binary layout: writeUTF(passId), writeUTF(regNo), writeUTF(name), writeInt(routeNo), writeUTF(boardingStop), writeUTF(validityDate), writeDouble(amountPaid). Each UTF field is length-prefixed by writeUTF; numeric fields have fixed widths (4-byte int, 8-byte double). Reader must use the identical order and types.
+A1.2 Operations (text design pseudocode)
+ADD(pass): OPEN BufferedWriter(FileWriter(path, append=true)); validate fields; encode one record; WRITE record and newline; FLUSH/CLOSE using try-with-resources.
+FIND(id): OPEN BufferedReader(FileReader(path)); WHILE (line = readLine()) is not null: parse safely; IF malformed, log line number and continue; IF pass.id=id RETURN pass; CLOSE; RETURN NOT_FOUND. BufferedReader reduces costly small reads; FileReader is character-oriented and suitable for UTF-8 only when constructed with an explicit charset (prefer Files.newBufferedReader(path, UTF_8)).
+LIST_BY_ROUTE(route): scan with BufferedReader; parse each valid record; append/display records whose route equals route; skip and report malformed rows.
+A1.3 Damaged data
+Validate exact field count, required fields, numeric route/amount and date format. Skip a damaged row and record its line number; do not terminate the entire search. Missing file: distinguish it from an empty file and either create it for ADD or report no store for read operations. For safer writes, write a complete replacement to a temporary file, flush/close it, then atomically move it over the original where supported. For append operations, a final incomplete line can be detected by missing delimiter/field count and ignored; backups or a journal improve recovery.
+Alternative – RandomAccessFile: fixed-size records permit seek(index × recordSize) in O(1), but locating an arbitrary pass ID still needs an index; without one it is O(n). Fixed-width strings waste space through padding and impose maximum lengths. An ID-to-offset index gives expected O(1) lookup at additional O(n) index space.
+
+A2 – BUFFERED I/O
+A2.1 50 MiB read one byte at a time requests approximately 52,428,800 read operations at Java API level; actual OS calls may be reduced by lower-level buffering, but unbuffered tiny reads incur high call/dispatch overhead.
+A2.2 Use BufferedInputStream with an 8 KiB/64 KiB buffer, or read a byte[] chunk in a loop. Count '\n' bytes. Complexity remains O(N) time; working memory is O(B), where B is buffer size. The stream performs roughly ceil(N/B) bulk refills rather than N single-byte reads.
+A2.3 Buffering may provide little benefit when data is already in memory, when the source itself returns large blocks efficiently, or when the workload performs only one small read.
+Alternative – Files.readAllLines(): convenient for small files, O(N) time and O(N) memory (plus String/object overhead). Buffered streaming uses O(B) extra memory and is preferred for 50 MB or unbounded logs.
+
+A3 – DAO PATTERN
+A3.1 Repeated steps: obtain connection, prepare/execute SQL, map ResultSet rows to objects, handle errors and close resources. Differences: table/column names, SQL statements, key type and object mapping.
+A3.2 Generic contract: Dao<T,K> has insert(T), findById(K), findAll(), update(T), delete(K). StudentDao implements the contract and owns Student-specific SQL and row mapping. Service/GUI calls the interface rather than embedding SQL.
+A3.3 Student fields map to student columns, e.g. Student.registerNo -> student.register_no (PRIMARY KEY), name -> name, email -> email, department -> department. The register number uniquely identifies a row.
+Alternative: SQL embedded in each service/GUI spreads schema dependencies. A renamed column may require edits in many classes; DAO centralizes the changes. Runtime and asymptotic cost per database operation are essentially the same; DAO adds a small abstraction/dispatch overhead and no material asymptotic space cost.
+
+A4 – SERIALIZATION
+A4.1 Mark the live JDBC Connection transient because it is process-specific, not serializable application state, and must be recreated. Password should not be persisted; mark transient and preferably never keep plaintext passwords in the object. Hostel, Room and Resident must implement Serializable. Serialization traverses reachable non-transient references recursively; repeated references are preserved using object handles. Ensure every reachable non-transient object is serializable.
+A4.2 Add a phoneNumber field and retain an explicit serialVersionUID. When reading an older stream with the same UID, the new field receives its default value (null for String); migration/defaulting logic should populate it. An incompatible UID causes InvalidClassException. Changing UID intentionally signals incompatible serialized versions.
+Alternative CSV/JSON: usually more portable and inspectable, with schema evolution handled by optional fields/defaults. Java serialization may be compact/easy for Java object graphs but is Java-specific and can be brittle across class changes. Save/load are O(n) in resident count for all approaches; sizes depend on encoding and metadata. CSV is often compact; JSON is more verbose; serialization has object metadata overhead.
+
+A5 – CORRECTNESS AND SAFETY
+A5.1 Transaction pseudocode: setAutoCommit(false); debit hostel wallet with conditional UPDATE ... SET balance=balance-500 WHERE id=? AND balance>=500; verify exactly one row; credit canteen wallet; verify exactly one row; commit. On any exception or unexpected row count, rollback; restore previous autoCommit in finally. Use one connection and a database engine supporting transactions.
+A5.2 Concatenated SQL allows input such as an ID containing a quote and SQL comment syntax to alter the WHERE clause and bypass the password condition. Use `SELECT ... WHERE id=? AND pwd=?` with PreparedStatement setters; values remain data, not SQL syntax. Store salted password hashes rather than plaintext passwords.
+Alternative two auto-commit updates: failure after debit but before credit loses ₹500; failure after credit but before debit could create money. A transaction adds coordination/logging overhead but guarantees atomicity and consistency; the exact latency depends on database configuration and must be measured.
